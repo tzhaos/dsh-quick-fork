@@ -1,0 +1,60 @@
+{
+  "name": "dsh-quick-fork",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Selection-driven temporary side conversations for DeepSeek Harness, opened in the native right sidebar.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "node scripts/check.mjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tzhaos/dsh-quick-fork.git"
+  },
+  "homepage": "https://github.com/tzhaos/dsh-quick-fork#readme",
+  "bugs": {
+    "url": "https://github.com/tzhaos/dsh-quick-fork/issues"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-api-session-controller"
+      ]
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "side-chat",
+    "fork",
+    "selection",
+    "ui"
+  ]
+}

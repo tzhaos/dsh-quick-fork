@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Quick Fork">
+  <rect width="64" height="64" rx="14" fill="#4D6BFE"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 18v12a8 8 0 0 0 8 8h16"/>
+    <path d="M20 18v24"/>
+    <path d="M20 18h24"/>
+  </g>
+  <circle cx="44" cy="38" r="9" fill="#4D6BFE" stroke="#FFFFFF" stroke-width="3"/>
+  <path d="M41 34v8l7-4z" fill="#FFFFFF"/>
+</svg>
