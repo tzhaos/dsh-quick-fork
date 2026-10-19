@@ -1,3 +1,17 @@
+## [0.4.0] - 2026-10-19
+
+### Added
+
+- Register a right-sidebar guide entry (`临时侧聊` / `Side chat`) through the tab definition's
+  official `guide` metadata, so the side chat can be opened from the new-tab guide without a
+  selection. Guide-opened chats derive the parent Session from the current main view and start with
+  an empty quote.
+
+### Verified
+
+- `node scripts/check.mjs`: 14 checks green.
+- Right-sidebar guide lists the new entry and opens a clean side-chat panel.
+
 ## [0.3.1] - 2026-10-19
 
 ### Fixed

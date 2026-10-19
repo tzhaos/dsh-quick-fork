@@ -44,6 +44,8 @@ window.__ModuleLoader__.load({
       'panel.expired': '临时会话已过期',
       'panel.close': '关闭',
       'panel.working': '运行中…',
+      'guide.title': '临时侧聊',
+      'guide.description': '不打断主线，针对选中内容追问',
     }
     const en = {
       'tab.title': 'Fork',
@@ -59,6 +61,8 @@ window.__ModuleLoader__.load({
       'panel.expired': 'This temporary conversation expired',
       'panel.close': 'Close',
       'panel.working': 'Running…',
+      'guide.title': 'Side chat',
+      'guide.description': 'Ask about a passage without interrupting the main thread',
     }
 
     /** Keep side tabs valid across a page reload, but not across an app restart. */
@@ -182,6 +186,13 @@ window.__ModuleLoader__.load({
         kind: KIND,
         multiple: true,
         title: () => t('tab.title'),
+        guide: [{
+          id: 'new',
+          order: 40,
+          title: () => t('guide.title'),
+          description: () => t('guide.description'),
+          icon: primitives.IconSparkleRegular,
+        }],
       }
     }
 
@@ -397,6 +408,7 @@ window.__ModuleLoader__.load({
         const tab = info?.tab
         const tabId = typeof tab?.id === 'string' ? tab.id : ''
         const params = useMemo(() => parseForkParams(tab?.navigation?.params), [tab?.navigation?.params])
+        const effective = useMemo(() => params ?? { parentSessionId: currentSessionIdOf(), quote: '' }, [params, tabId])
         const [childId, setChildId] = useState(null)
         const [binding, setBinding] = useState(null)
         const [messages, setMessages] = useState([])
@@ -422,7 +434,7 @@ window.__ModuleLoader__.load({
             try { tab?.actions?.close?.() } catch { /* ignore */ }
             return undefined
           }
-          if (params === null || tabId === '') {
+          if (tabId === '' || effective.parentSessionId === '') {
             setError(tRef(ctx, 'panel.failed'))
             return undefined
           }
@@ -448,18 +460,18 @@ window.__ModuleLoader__.load({
               if (typeof ctx.sessions?.create === 'function') {
                 let cwd
                 try {
-                  cwd = ctx.sessions.list?.getSnapshot?.()?.byId?.[params.parentSessionId]?.cwd
+                  cwd = ctx.sessions.list?.getSnapshot?.()?.byId?.[effective.parentSessionId]?.cwd
                 } catch { cwd = undefined }
                 child = await ctx.sessions.create(typeof cwd === 'string' && cwd !== '' ? { cwd } : {})
               } else if (typeof ctx.sessions?.fork === 'function') {
-                child = await ctx.sessions.fork({ sessionId: params.parentSessionId })
+                child = await ctx.sessions.fork({ sessionId: effective.parentSessionId })
               } else {
                 throw new Error('session create unavailable')
               }
               if (cancelled) return
               if (typeof child !== 'string' || child === '') throw new Error('fork returned no session')
               baselineRef.current = baselineSeq
-              saveMeta(tabId, { childId: child, runId: RUN_ID, parentSessionId: params.parentSessionId, baselineSeq })
+              saveMeta(tabId, { childId: child, runId: RUN_ID, parentSessionId: effective.parentSessionId, baselineSeq })
               rememberChild(child)
               setChildId(child)
             } catch (forkError) {
@@ -467,7 +479,7 @@ window.__ModuleLoader__.load({
             }
           })()
           return () => { cancelled = true }
-        }, [params, tabId])
+        }, [effective, tabId])
 
         // Adopt the child binding and its durable conversation face.
         useEffect(() => {
@@ -542,7 +554,7 @@ window.__ModuleLoader__.load({
           if (text === '' || sending || binding === null) return
           setSending(true)
           setError('')
-          const promptText = composePrompt(text, params?.quote ?? '', quoteSentRef.current)
+          const promptText = composePrompt(text, effective.quote ?? '', quoteSentRef.current)
           try {
             const session = binding.session
             const submission = typeof session.beginSubmission === 'function'
@@ -554,7 +566,7 @@ window.__ModuleLoader__.load({
               setError(tRef(ctx, 'panel.failed'))
             } else {
               setDraft('')
-              if ((params?.quote ?? '') !== '') {
+              if ((effective.quote ?? '') !== '') {
                 quoteSentRef.current = true
                 saveMeta(tabId, { ...(loadMeta(tabId) ?? {}), quoteSent: true })
               }
@@ -566,7 +578,7 @@ window.__ModuleLoader__.load({
           }
         }
 
-        const quote = params?.quote ?? ''
+        const quote = effective.quote ?? ''
         const status = expired
           ? h('div', { className: 'dshqf-state' }, tRef(ctx, 'panel.expired'))
           : null

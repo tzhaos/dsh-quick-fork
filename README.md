@@ -67,7 +67,7 @@ node scripts/check.mjs
 ```
 
 零依赖测试覆盖清单、bundle patch、locale、icon、参数解析、消息映射、tab 定义、
-选择门控和引用上下文，共 12 项检查。
+选择门控、引用上下文和向导入口，共 14 项检查。
 
 ## 许可证
 

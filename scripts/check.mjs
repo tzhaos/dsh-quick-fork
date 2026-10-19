@@ -45,7 +45,7 @@ function load() {
   const plugin = loaded.factory((id) => {
     if (id === 'react') return { createElement: () => null, useEffect() {}, useMemo: (fn) => fn(), useRef: () => ({}), useState: (value) => [value, () => {}] }
     if (id === 'react-dom') return { createPortal: (element) => element }
-    if (id === '@deepseek-ai/dsh-client-ui-primitives') return { MarkdownText: () => null }
+    if (id === '@deepseek-ai/dsh-client-ui-primitives') return { MarkdownText: () => null, IconSparkleRegular: () => null }
     throw new Error('unexpected require ' + id)
   })
   return { plugin, storage }
@@ -53,7 +53,7 @@ function load() {
 
 await check('manifest declares a DSH bundle and web client half', () => {
   assert.equal(manifest.name, 'dsh-quick-fork')
-  assert.equal(manifest.version, '0.3.1')
+  assert.equal(manifest.version, '0.4.0')
   assert.equal(manifest.license, 'MIT')
   assert.equal(manifest.main, 'index.js')
   assert.equal(manifest.exports['./client'], './client.js')
@@ -157,6 +157,16 @@ await check('the selected passage is included in the first prompt only', () => {
   assert.equal(plugin.__test.composePrompt('why?', 'line one\nline two', false), '> line one\n> line two\n\nwhy?')
   assert.equal(plugin.__test.composePrompt('why?', 'line one', true), 'why?')
   assert.equal(plugin.__test.composePrompt('why?', '   ', false), 'why?')
+})
+
+await check('the side chat is listed in the right-sidebar guide', () => {
+  const { plugin } = load()
+  const definition = plugin.__test.tabDefinitionFor((key) => key)
+  assert.equal(definition.guide.length, 1)
+  assert.equal(definition.guide[0].id, 'new')
+  assert.equal(definition.guide[0].title(), 'guide.title')
+  assert.equal(definition.guide[0].description(), 'guide.description')
+  assert.equal(typeof definition.guide[0].icon, 'function')
 })
 
 await check('selection gate rejects panel selections and temp children', () => {
