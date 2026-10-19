@@ -1,3 +1,15 @@
+## [0.3.1] - 2026-10-19
+
+### Fixed
+
+- Restored side tabs close cleanly after a page reload instead of attempting to re-create a child
+  and showing "临时会话创建失败"; tab remounts within the same page still reattach.
+- Fall back to the plain session binding (and unarchive) when the retained reference is gone.
+
+### Verified
+
+- `node scripts/check.mjs`: 13 checks green.
+
 ## [0.3.0] - 2026-10-19
 
 ### Changed

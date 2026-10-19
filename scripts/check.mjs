@@ -53,7 +53,7 @@ function load() {
 
 await check('manifest declares a DSH bundle and web client half', () => {
   assert.equal(manifest.name, 'dsh-quick-fork')
-  assert.equal(manifest.version, '0.3.0')
+  assert.equal(manifest.version, '0.3.1')
   assert.equal(manifest.license, 'MIT')
   assert.equal(manifest.main, 'index.js')
   assert.equal(manifest.exports['./client'], './client.js')

@@ -28,6 +28,7 @@ window.__ModuleLoader__.load({
     const META_PREFIX = 'dsh.quickFork.tab.'
     const CHILD_KEY = 'dsh.quickFork.children'
     const RUN_ID = runIdForThisTab()
+    const PAGE_RUN = randomId()
 
     const zh = {
       'tab.title': '复创',
@@ -71,6 +72,21 @@ window.__ModuleLoader__.load({
         return created
       } catch {
         return randomId()
+      }
+    }
+
+    /** True when this module instance is a fresh page load after a restored tab. */
+    function restoredPage() {
+      try {
+        const key = 'dsh.quickFork.pageRun'
+        const previous = sessionStorage.getItem(key)
+        if (previous === null || previous === '') {
+          sessionStorage.setItem(key, PAGE_RUN)
+          return false
+        }
+        return previous !== PAGE_RUN
+      } catch {
+        return false
       }
     }
 
@@ -398,6 +414,14 @@ window.__ModuleLoader__.load({
         // matching run marker: it is expired and must not create another child.
         useEffect(() => {
           let cancelled = false
+          const pageRestored = restoredPage()
+          if (pageRestored) {
+            setExpired(true)
+            setError(tRef(ctx, 'panel.expired'))
+            if (tabId !== '') dropMeta(tabId)
+            try { tab?.actions?.close?.() } catch { /* ignore */ }
+            return undefined
+          }
           if (params === null || tabId === '') {
             setError(tRef(ctx, 'panel.failed'))
             return undefined
@@ -452,11 +476,26 @@ window.__ModuleLoader__.load({
           let retained
           void (async () => {
             try {
-              retained = typeof ctx.sessions.retain === 'function'
-                ? ctx.sessions.retain(childId, { source: 'dsh-quick-fork' })
-                : undefined
-              const next = retained !== undefined ? await retained.ready : ctx.sessions.binding(childId)
-              if (disposed || next === null || next === undefined) return
+              let next
+              try {
+                retained = typeof ctx.sessions.retain === 'function'
+                  ? ctx.sessions.retain(childId, { source: 'dsh-quick-fork' })
+                  : undefined
+                next = retained !== undefined ? await retained.ready : undefined
+              } catch {
+                retained = undefined
+              }
+              if (next === null || next === undefined) {
+                next = ctx.sessions.binding(childId)
+              }
+              if (next === null || next === undefined) {
+                try { await ctx.get('workspaces')?.unarchiveSession?.(childId) } catch { /* not archived */ }
+                next = ctx.sessions.binding(childId)
+              }
+              if (disposed || next === null || next === undefined) {
+                if (!disposed) setError(tRef(ctx, 'panel.expired'))
+                return
+              }
               try { await next.session.open?.() } catch { /* already opening */ }
               if (!disposed) setBinding(next)
             } catch (bindingError) {
