@@ -2,11 +2,12 @@
  * Quick Fork — browser half of `dsh-quick-fork`.
  *
  * Selecting text in a conversation shows a compact two-segment capsule above
- * the selection. “Add to chat” inserts the passage as a Markdown quote into the
- * main composer through the Host input shell; “Ask in side chat” opens a
- * temporary conversation in the native right sidebar. The tab owns its child
- * Session only for this app run: closing the tab archives the child, and the
- * next app start closes any restored tab before it can fork again.
+ * the selection. “Add to chat” attaches the passage to the composer as a
+ * numbered annotation chip (hovering the chip shows the full text) and carries
+ * the annotations as leading context on the next prompt; “Ask in side chat”
+ * opens a temporary conversation in the native right sidebar. The tab owns its
+ * child Session only for this app run: closing the tab archives the child, and
+ * the next app start closes any restored tab before it can fork again.
  *
  * The panel is intentionally a compact side-chat surface: quote, transcript,
  * composer. It does not replace or clone the main conversation layout.
@@ -28,6 +29,10 @@ window.__ModuleLoader__.load({
     const KIND = 'quick-fork'
     const META_PREFIX = 'dsh.quickFork.tab.'
     const CHILD_KEY = 'dsh.quickFork.children'
+    const ANNOTATION_STORE_KEY = 'dsh.quickFork.annotations'
+    const ANNOTATION_MAX_COUNT = 20
+    const ANNOTATION_MAX_TEXT = 20000
+    const ANNOTATION_EMPTY = Object.freeze([])
     const RUN_ID = runIdForThisTab()
     const PAGE_RUN = randomId()
 
@@ -35,10 +40,13 @@ window.__ModuleLoader__.load({
       'tab.title': '临时对话',
       'bubble.aria': '选中文字操作',
       'bubble.addToChat': '添加到对话',
-      'bubble.addToChatAria': '把选中内容添加到当前对话的输入框',
+      'bubble.addToChatAria': '把选中内容作为注释添加到当前对话',
       'bubble.addToTempChat': '添加到临时对话',
       'bubble.addToTempChatAria': '用选中内容开一个临时侧边对话',
-      'bubble.addFailed': '当前对话的输入框暂时不可写入',
+      'bubble.addFailed': '当前对话暂时无法添加注释',
+      'annotation.label': '注释',
+      'annotation.panelTitle': '选中内容',
+      'annotation.remove': '移除注释',
       'panel.quote': '选中内容',
       'panel.placeholder': '针对这段内容继续提问…',
       'panel.send': '发送',
@@ -56,10 +64,13 @@ window.__ModuleLoader__.load({
       'tab.title': 'Side chat',
       'bubble.aria': 'Selection actions',
       'bubble.addToChat': 'Add to chat',
-      'bubble.addToChatAria': 'Add the selected text to the current conversation input',
+      'bubble.addToChatAria': 'Add the selected text to this conversation as an annotation',
       'bubble.addToTempChat': 'Ask in side chat',
       'bubble.addToTempChatAria': 'Open a temporary side conversation with the selected text',
-      'bubble.addFailed': 'The current conversation input is not writable right now',
+      'bubble.addFailed': 'This conversation cannot take an annotation right now',
+      'annotation.label': 'annotation',
+      'annotation.panelTitle': 'Selected text',
+      'annotation.remove': 'Remove annotation',
       'panel.quote': 'Selected text',
       'panel.placeholder': 'Ask about this passage…',
       'panel.send': 'Send',
@@ -150,19 +161,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Build the text inserted by “Add to chat”.
-     * @param {string} text - selected plain text.
-     * @param {string} draft - current composer draft.
-     * @returns {string} blockquote separated from the surrounding draft by blank lines.
-     */
-    function insertionTextOf(text, draft) {
-      const block = quoteBlockOf(text)
-      if (block === '') return ''
-      const lead = typeof draft === 'string' && draft.trim() !== '' ? '\n\n' : ''
-      return lead + block + '\n\n'
-    }
-
-    /**
      * Put the selected passage in front of the first prompt only.
      * @param {string} text - user's typed prompt.
      * @param {string} quote - selected passage.
@@ -197,46 +195,332 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Annotation lists by Session id (browser-local draft context, persisted). */
+    const annotationBySession = loadAnnotationStore()
+    const annotationListeners = new Set()
+    const wrappedPrompts = new WeakSet()
+
+    /** @returns {Map<string, Array<{id:string,text:string}>>} persisted annotation lists. */
+    function loadAnnotationStore() {
+      const store = new Map()
+      try {
+        if (typeof localStorage === 'undefined') return store
+        const raw = JSON.parse(localStorage.getItem(ANNOTATION_STORE_KEY) ?? 'null')
+        if (raw === null || typeof raw !== 'object') return store
+        for (const [sessionId, items] of Object.entries(raw)) {
+          if (typeof sessionId !== 'string' || !Array.isArray(items)) continue
+          const list = items
+            .filter((item) => item !== null && typeof item === 'object' && typeof item.text === 'string' && item.text.trim() !== '')
+            .slice(0, ANNOTATION_MAX_COUNT)
+            .map((item) => ({
+              id: typeof item.id === 'string' && item.id !== '' ? item.id : randomId(),
+              text: item.text.slice(0, ANNOTATION_MAX_TEXT),
+            }))
+          if (list.length > 0) store.set(sessionId, list)
+        }
+      } catch {
+        return new Map()
+      }
+      return store
+    }
+
+    /** Persist the current annotation lists; storage failures keep the in-page copy. */
+    function saveAnnotationStore() {
+      try {
+        if (typeof localStorage === 'undefined') return
+        const raw = {}
+        for (const [sessionId, items] of annotationBySession) if (items.length > 0) raw[sessionId] = items
+        if (Object.keys(raw).length === 0) localStorage.removeItem(ANNOTATION_STORE_KEY)
+        else localStorage.setItem(ANNOTATION_STORE_KEY, JSON.stringify(raw))
+      } catch {
+        // Storage unavailable: annotations still work for this page.
+      }
+    }
+
+    /** Notify every mounted annotation layer. */
+    function notifyAnnotations() {
+      for (const listener of [...annotationListeners]) {
+        try {
+          listener()
+        } catch {
+          // One bad listener must not stop the rest.
+        }
+      }
+    }
+
+    /** @param {() => void} listener @returns {() => void} unsubscribe. */
+    function subscribeAnnotations(listener) {
+      annotationListeners.add(listener)
+      return () => {
+        annotationListeners.delete(listener)
+      }
+    }
+
+    /** @param {string} sessionId @returns {Array<{id:string,text:string}>} current list. */
+    function annotationItemsOf(sessionId) {
+      return annotationBySession.get(sessionId) ?? ANNOTATION_EMPTY
+    }
+
+    /** @param {string} sessionId @param {string} text @returns {boolean} whether it was added. */
+    function addAnnotation(sessionId, text) {
+      if (typeof sessionId !== 'string' || sessionId === '' || typeof text !== 'string') return false
+      const trimmed = text.trim()
+      if (trimmed === '') return false
+      const items = annotationItemsOf(sessionId)
+      if (items.length >= ANNOTATION_MAX_COUNT) return false
+      annotationBySession.set(sessionId, [...items, { id: randomId(), text: trimmed.slice(0, ANNOTATION_MAX_TEXT) }])
+      saveAnnotationStore()
+      notifyAnnotations()
+      return true
+    }
+
+    /** @param {string} sessionId @param {string} id @returns {boolean} whether it was removed. */
+    function removeAnnotation(sessionId, id) {
+      const items = annotationItemsOf(sessionId)
+      const next = items.filter((item) => item.id !== id)
+      if (next.length === items.length) return false
+      if (next.length === 0) annotationBySession.delete(sessionId)
+      else annotationBySession.set(sessionId, next)
+      saveAnnotationStore()
+      notifyAnnotations()
+      return true
+    }
+
+    /** @param {string} sessionId @param {Array<{id:string,text:string}>} items - annotations to drop. */
+    function forgetAnnotations(sessionId, items) {
+      if (items.length === 0) return
+      const ids = new Set(items.map((item) => item.id))
+      const next = annotationItemsOf(sessionId).filter((item) => !ids.has(item.id))
+      if (next.length === 0) annotationBySession.delete(sessionId)
+      else annotationBySession.set(sessionId, next)
+      saveAnnotationStore()
+      notifyAnnotations()
+    }
+
+    /** @param {string} sessionId @param {Array<{id:string,text:string}>} items - annotations to put back. */
+    function restoreAnnotations(sessionId, items) {
+      if (items.length === 0) return
+      const current = annotationItemsOf(sessionId)
+      const known = new Set(current.map((item) => item.id))
+      const missing = items.filter((item) => !known.has(item.id))
+      if (missing.length === 0) return
+      annotationBySession.set(sessionId, [...missing, ...current].slice(0, ANNOTATION_MAX_COUNT))
+      saveAnnotationStore()
+      notifyAnnotations()
+    }
+
     /**
-     * Insert the selected passage as a quote into the current conversation's composer.
-     * The primary path inserts one undoable plain-text edit at the caret; when the
-     * insertion point is stale the draft is rewritten with the same quote.
+     * Model-facing context for one submission: numbered selected passages.
+     * @param {Array<{text:string}>} items - annotations in display order.
+     * @returns {string} context text, or '' when nothing can be sent.
+     */
+    function annotationContextOf(items) {
+      if (!Array.isArray(items) || items.length === 0) return ''
+      return items
+        .filter((item) => item !== null && typeof item === 'object' && typeof item.text === 'string' && item.text.trim() !== '')
+        .map((item, index) => 'Selected text ' + String(index + 1) + ':\n' + item.text.trim())
+        .join('\n\n')
+    }
+
+    /**
+     * Wrap one Session's prompt so pending annotations travel as a leading text
+     * block. Annotations leave the draft when the send starts; a rejected prompt
+     * puts the same annotations back in their original order.
      * @param {object} ctx - root client context.
      * @param {string} sessionId - owning Session id.
-     * @param {string} text - selected plain text.
-     * @returns {boolean} whether the draft changed.
      */
-    function addSelectionToChat(ctx, sessionId, text) {
-      const shell = inputShellOf(ctx, sessionId)
-      if (shell === null) return false
+    function ensureAnnotationPromptWrapper(ctx, sessionId) {
       try {
-        const draft = typeof shell.snapshot?.draft === 'string' ? shell.snapshot.draft : ''
-        const insertion = insertionTextOf(text, draft)
-        if (insertion === '') return false
-        const actions = shell.actions
-        let inserted = false
-        if (typeof actions?.captureInsertion === 'function' && typeof actions?.insertText === 'function') {
+        const binding = ctx.sessions?.binding?.(sessionId)
+        const session = binding?.session
+        if (session === null || session === undefined || typeof session.prompt !== 'function') return
+        if (wrappedPrompts.has(session)) return
+        const original = session.prompt
+        const patched = async function promptWithAnnotations(content, mode, signal, requestId) {
+          const pending = annotationItemsOf(sessionId).slice()
+          const context = pending.length === 0 ? '' : annotationContextOf(pending)
+          if (context === '' || !Array.isArray(content)) return original.call(this, content, mode, signal, requestId)
+          forgetAnnotations(sessionId, pending)
+          let result
           try {
-            inserted = actions.insertText(insertion, actions.captureInsertion()) === true
-          } catch {
-            inserted = false
+            result = await original.call(this, [{ type: 'text', text: context }, ...content], mode, signal, requestId)
+          } catch (error) {
+            restoreAnnotations(sessionId, pending)
+            throw error
           }
+          if (result === null || result === undefined || result.ok !== true) restoreAnnotations(sessionId, pending)
+          return result
         }
-        if (!inserted && typeof actions?.setDraft === 'function') {
-          const next = draft.trim() === '' ? insertion : draft.replace(/\s+$/, '') + '\n\n' + quoteBlockOf(text) + '\n\n'
-          actions.setDraft(next)
-          inserted = true
-        }
-        if (inserted) {
-          try {
-            shell.focus?.()
-          } catch {
-            // Focus is best effort; the draft is already updated.
-          }
-        }
-        return inserted
+        session.prompt = patched
+        wrappedPrompts.add(session)
       } catch {
-        return false
+        // Wrapping is best effort; annotations still show even without submission context.
+      }
+    }
+
+    /**
+     * Find or create the annotation row host directly above one composer editor.
+     * @param {Element} card - `[data-composer-card]` element.
+     * @returns {Element} the host element.
+     */
+    function ensureAnnotationHost(card) {
+      let host = null
+      for (const child of card.children) {
+        if (child?.getAttribute?.('data-dsh-quick-fork-annotations') !== null) {
+          host = child
+          break
+        }
+      }
+      if (host === null) {
+        host = document.createElement('div')
+        host.setAttribute('data-dsh-quick-fork-annotations', '')
+        host.className = 'dshqf-annotations'
+        host.style.display = 'none'
+      }
+      const editor = card.querySelector(':scope > [data-input-scroll]')
+      if (editor !== null && editor.parentElement === card) {
+        if (host.parentElement !== card || host.nextElementSibling !== editor) card.insertBefore(host, editor)
+      } else if (host.parentElement !== card) {
+        card.appendChild(host)
+      }
+      return host
+    }
+
+    /**
+     * Build the composer annotation layer: numbered chips inside the composer
+     * card, each with a hover panel that shows the full selected passage.
+     * @param {object} ctx - root client context.
+     * @returns {Function} React component registered into the composer overlay.
+     */
+    function createAnnotationChips(ctx) {
+      return function AnnotationChipLayer({ sessionId, t }) {
+        const [marker, setMarker] = useState(null)
+        const [host, setHost] = useState(null)
+        const [items, setItems] = useState(() => annotationItemsOf(sessionId))
+        const [hover, setHover] = useState(null)
+        const [panelPosition, setPanelPosition] = useState(null)
+        const hoverTimerRef = useRef(null)
+        const panelRef = useRef(null)
+
+        useEffect(() => {
+          setItems(annotationItemsOf(sessionId))
+          return subscribeAnnotations(() => setItems(annotationItemsOf(sessionId)))
+        }, [sessionId])
+
+        useEffect(() => {
+          ensureAnnotationPromptWrapper(ctx, sessionId)
+        }, [sessionId])
+
+        useEffect(() => {
+          if (marker === null) {
+            setHost(null)
+            return undefined
+          }
+          const card = typeof marker.closest === 'function' ? marker.closest('[data-composer-card]') : null
+          if (card === null) {
+            setHost(null)
+            return undefined
+          }
+          const target = ensureAnnotationHost(card)
+          setHost(target)
+          let observer
+          if (typeof MutationObserver === 'function') {
+            observer = new MutationObserver(() => {
+              if (card.contains(target) && target.parentElement === card) return
+              setHost(ensureAnnotationHost(card))
+            })
+            observer.observe(card, { childList: true })
+          }
+          return () => {
+            observer?.disconnect?.()
+            target.remove?.()
+          }
+        }, [marker, sessionId])
+
+        useEffect(() => {
+          if (host === null) return
+          host.style.display = items.length === 0 ? 'none' : 'flex'
+        }, [host, items.length])
+
+        useEffect(() => () => {
+          if (hoverTimerRef.current !== null) clearTimeout(hoverTimerRef.current)
+        }, [])
+
+        // Measure the hover panel before painting so it never flashes at a stale spot.
+        useLayoutEffect(() => {
+          if (hover === null || panelRef.current === null) {
+            setPanelPosition(null)
+            return
+          }
+          const rect = panelRef.current.getBoundingClientRect()
+          const viewport = typeof window.innerWidth === 'number' ? window.innerWidth : 0
+          const left = Math.min(Math.max(8, hover.x - rect.width / 2), Math.max(8, viewport - rect.width - 8))
+          const above = hover.y - rect.height - 8
+          const top = above >= 8 ? above : hover.y + hover.height + 8
+          setPanelPosition({ left, top })
+        }, [hover])
+
+        const cancelHide = () => {
+          if (hoverTimerRef.current === null) return
+          clearTimeout(hoverTimerRef.current)
+          hoverTimerRef.current = null
+        }
+        const scheduleHide = () => {
+          cancelHide()
+          hoverTimerRef.current = setTimeout(() => {
+            hoverTimerRef.current = null
+            setHover(null)
+          }, 180)
+        }
+        const showHover = (item, element) => {
+          if (typeof element?.getBoundingClientRect !== 'function') return
+          cancelHide()
+          const rect = element.getBoundingClientRect()
+          setHover({ id: item.id, x: rect.left + rect.width / 2, y: rect.top, height: rect.height })
+        }
+
+        const hoveredIndex = hover === null ? -1 : items.findIndex((item) => item.id === hover.id)
+        const hoveredItem = hoveredIndex >= 0 ? items[hoveredIndex] : null
+        const hoverPanel = hoveredItem === null ? null : createPortal(h('div', {
+          ref: panelRef,
+          className: 'dshqf-annotationPanel',
+          role: 'tooltip',
+          style: panelPosition === null
+            ? { left: '-9999px', top: '-9999px' }
+            : { left: panelPosition.left + 'px', top: panelPosition.top + 'px' },
+          onMouseEnter: cancelHide,
+          onMouseLeave: scheduleHide,
+        },
+          h('div', { className: 'dshqf-annotationPanelTitle' }, String(hoveredIndex + 1) + '. ' + t('annotation.panelTitle')),
+          h('div', { className: 'dshqf-annotationPanelText' }, hoveredItem.text)), document.body)
+        const row = h('div', { className: 'dshqf-annotationRow', role: 'list' },
+          items.map((item, index) => h('span', {
+            key: item.id,
+            className: 'dshqf-annotation' + (hover !== null && hover.id === item.id ? ' dshqf-annotationActive' : ''),
+            role: 'listitem',
+            tabIndex: 0,
+            onMouseEnter: (event) => showHover(item, event.currentTarget),
+            onMouseLeave: scheduleHide,
+            onFocus: (event) => showHover(item, event.currentTarget),
+            onBlur: scheduleHide,
+          },
+            h('span', { className: 'dshqf-annotationNum', 'aria-hidden': true }, String(index + 1) + '.'),
+            h('span', { className: 'dshqf-annotationLabel' }, t('annotation.label')),
+            h('button', {
+              type: 'button',
+              className: 'dshqf-annotationRemove',
+              'aria-label': t('annotation.remove'),
+              title: t('annotation.remove'),
+              onMouseDown: (event) => { event.stopPropagation?.() },
+              onClick: (event) => {
+                event.stopPropagation?.()
+                if (hover !== null && hover.id === item.id) setHover(null)
+                removeAnnotation(sessionId, item.id)
+              },
+            }, '×'))))
+        const markerEl = h('span', { key: 'annotation-marker', ref: setMarker, hidden: true })
+        if (host === null) return markerEl
+        return h(React.Fragment, null, markerEl, createPortal(row, host), hoverPanel)
       }
     }
 
@@ -465,7 +749,7 @@ window.__ModuleLoader__.load({
                 clear()
                 return
               }
-              setBubble({ text: text.slice(0, 2000), x: rect.left + rect.width / 2, y: rect.top, sessionId })
+              setBubble({ text: text.slice(0, ANNOTATION_MAX_TEXT), x: rect.left + rect.width / 2, y: rect.top, sessionId })
             } catch {
               clear()
             }
@@ -501,9 +785,11 @@ window.__ModuleLoader__.load({
           setPosition(null)
         }
         const addToChat = () => {
-          const added = addSelectionToChat(ctx, bubble.sessionId, bubble.text)
+          const added = addAnnotation(bubble.sessionId, bubble.text)
           if (!added) {
             try { inputShellOf(ctx, bubble.sessionId)?.notify?.('error', tRef(ctx, 'bubble.addFailed')) } catch { /* notice is best effort */ }
+          } else {
+            try { inputShellOf(ctx, bubble.sessionId)?.focus?.() } catch { /* focus is best effort */ }
           }
           close()
         }
@@ -514,7 +800,7 @@ window.__ModuleLoader__.load({
             return
           }
           sidebar.openTab(KIND, {
-            params: { parentSessionId: bubble.sessionId, quote: bubble.text },
+            params: { parentSessionId: bubble.sessionId, quote: bubble.text.slice(0, 2000) },
           })
           close()
         }
@@ -799,6 +1085,18 @@ window.__ModuleLoader__.load({
 .dshqf-capsuleBtn:active{background:var(--dsw-alias-interactive-bg-active)}
 .dshqf-capsuleBtn:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-2px}
 .dshqf-capsuleBtn+.dshqf-capsuleBtn{border-left:1px solid var(--dsw-alias-border-l2)}
+.dshqf-annotations{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.dshqf-annotationRow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.dshqf-annotation{display:inline-flex;align-items:center;gap:6px;max-width:260px;height:24px;padding:0 4px 0 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm,6px);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1;outline:none}
+.dshqf-annotation:hover,.dshqf-annotationActive{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dshqf-annotation:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}
+.dshqf-annotationNum{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
+.dshqf-annotationLabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dshqf-annotationRemove{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:13px;line-height:1;cursor:pointer}
+.dshqf-annotationRemove:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dshqf-annotationPanel{position:fixed;z-index:130;box-sizing:border-box;width:max-content;min-width:200px;max-width:min(420px,calc(100vw - 16px));border:1px solid var(--dsw-alias-border-l3);border-radius:10px;background:var(--dsw-alias-bg-base);box-shadow:var(--dsw-elevation-soft);padding:10px 12px;color:var(--dsw-alias-label-primary);font-size:12px;line-height:1.5}
+.dshqf-annotationPanelTitle{font-weight:600;margin-bottom:6px}
+.dshqf-annotationPanelText{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;color:var(--dsw-alias-label-secondary)}
 .dshqf-panel{display:flex;flex-direction:column;gap:10px;height:100%;min-height:0;padding:10px;box-sizing:border-box;color:var(--dsw-alias-label-primary);font-size:13px}
 .dshqf-state,.dshqf-empty{color:var(--dsw-alias-label-tertiary);font-size:12px;padding:8px 2px}
 .dshqf-quote{border-left:2px solid var(--dsw-alias-state-business-primary);padding:6px 8px;background:var(--dsw-alias-interactive-bg-hover);border-radius:6px}
@@ -842,6 +1140,7 @@ window.__ModuleLoader__.load({
       }, 'quick-fork: styles')
 
       const SelectionLayer = createSelectionLayer(ctx)
+      const AnnotationChipLayer = createAnnotationChips(ctx)
       const Panel = createPanel(ctx)
       const tabDefinition = tabDefinitionFor((key) => {
         try { return ctx.locale.bind(NS)(key) } catch { return key }
@@ -851,6 +1150,14 @@ window.__ModuleLoader__.load({
         name: 'shell.overlay',
         id: 'quick-fork.selection',
       }, SelectionLayer)), 'quick-fork: selection bubble')
+
+      ctx.effect(() => ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register({
+        name: 'conversation.input.overlay',
+        id: 'quick-fork.annotations',
+        order: 40,
+        locale: NS,
+        inject: (sessionId) => ({ sessionId }),
+      }, AnnotationChipLayer)), 'quick-fork: annotation chips')
 
       ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
         name: 'sidebar.right.pane.tab',
@@ -876,7 +1183,22 @@ window.__ModuleLoader__.load({
     return {
       inject: ['sessions', 'slots', 'locale'],
       apply,
-      __test: { parseForkParams, nodesToMessages, tabDefinitionFor, canOfferSelection, composePrompt, quoteBlockOf, insertionTextOf, maxSeqOf },
+      __test: {
+        parseForkParams,
+        nodesToMessages,
+        tabDefinitionFor,
+        canOfferSelection,
+        composePrompt,
+        quoteBlockOf,
+        maxSeqOf,
+        annotationContextOf,
+        addAnnotation,
+        annotationItemsOf,
+        removeAnnotation,
+        forgetAnnotations,
+        restoreAnnotations,
+        ensureAnnotationPromptWrapper,
+      },
     }
   },
 })

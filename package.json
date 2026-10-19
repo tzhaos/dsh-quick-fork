@@ -1,8 +1,8 @@
 {
   "name": "dsh-quick-fork",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
-  "description": "Selection actions for DeepSeek Harness: quote the selected passage into the composer or open a temporary side conversation in the native right sidebar.",
+  "description": "Selection actions for DeepSeek Harness: attach the selected passage to the composer as a numbered annotation or open a temporary side conversation in the native right sidebar.",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -56,6 +56,7 @@
     "fork",
     "selection",
     "add-to-chat",
+    "annotation",
     "ui"
   ]
 }

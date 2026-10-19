@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Selection Actions",
-    "description": "Select text in a conversation to quote it into the composer or open a temporary side conversation."
+    "description": "Select text in a conversation to attach it as an annotation to the composer or open a temporary side conversation."
   }
 }

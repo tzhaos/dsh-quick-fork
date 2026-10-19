@@ -4,35 +4,43 @@
 
 Select text in a conversation and **one capsule with two buttons** appears above the selection:
 
-- **Add to chat** — quote the passage into the current conversation composer, ready for a follow-up
+- **Add to chat** — attach the passage to the current composer as a numbered **annotation chip**;
+  hover a chip to read the full text, and the annotation rides along as context on the next prompt
 - **Ask in side chat** — open a **temporary side conversation** in the right sidebar with the
   passage quoted into the first prompt
 
-> Version `0.5.0`. The side chat uses a native right-sidebar tab but its own compact panel; it does
+> Version `0.6.0`. The side chat uses a native right-sidebar tab but its own compact panel; it does
 > not clone the main conversation component tree.
 
 ## Why
 
 While reviewing code or a plan, it is often useful to ask about one passage without interrupting the
-main thread — and just as often you only want that passage quoted into the composer before typing a
+main thread — and just as often you only want that passage attached to the composer before typing a
 follow-up. `dsh-quick-fork` puts both actions above the selection:
 
 1. select a passage in the main conversation
 2. the floating capsule offers two actions:
-   - **Add to chat** writes a Markdown quote into the main composer (one undoable edit) and returns
-     focus to it
+   - **Add to chat** adds `1. annotation ×`-style chips inside the composer card; hover shows the
+     full passage, × removes one chip, and more chips can be added
    - **Ask in side chat** opens a temporary conversation in the right sidebar with the passage
      quoted
-3. the quote is carried into the first side-chat prompt only
+3. when the message is sent, pending annotations travel as a leading `Selected text N:` context
+   block; they clear after the Host accepts the message
 4. closing the tab or the app makes the temporary conversation disappear
 
 ## Current implementation
 
 - listens to the selection in `shell.overlay` and shows a two-segment capsule above it (one capsule,
   two buttons, a divider between them)
-- add-to-chat writes through the Session input shell (`captureInsertion()` / `insertText()`) as one
-  undoable plain-text edit; a stale insertion point falls back to `setDraft`
-- the selection becomes a Markdown blockquote; an existing draft is separated by blank lines
+- add-to-chat stores the passage in a browser-local **annotation store** (bucketed per Session and
+  persisted to `localStorage`)
+- a composer annotation layer mounts through the `conversation.input.overlay` slot and inserts its
+  row inside `[data-composer-card]`, directly before the editor; the row is restored if the card
+  re-renders or remounts
+- each chip shows its index and “annotation”; hovering or focusing it opens a floating panel with
+  the full passage, and removing a chip renumbers the rest
+- sending wraps the current Session's `prompt`: annotations are optimistically removed from the
+  composer and prepended as a text block; a rejected prompt restores them in their original order
 - **Ask in side chat** creates a child Session through `sessions.create({ cwd })`
 - registers a native right-sidebar tab type and opens a `quick-fork` tab
 - the panel shows the quote, a message list, a composer and send/stop
@@ -44,10 +52,15 @@ follow-up. `dsh-quick-fork` puts both actions above the selection:
 
 ## Data and boundaries
 
+- annotations live only in browser `localStorage`; they are not written to the host draft or Session
+  data, and they survive a page reload
+- annotation context enters the Session log as the leading text of the user message (DSH has no
+  native text-annotation attachment type), so it is visible to both the user and the model after
+  sending
 - the temporary conversation is still a real DSH Session and is written to host session storage
 - closing archives rather than physically deletes; it can be restored from the archive
-- selected text stays in tab navigation/local metadata and never enters the main conversation
-- **Add to chat** only edits the current draft; it never sends a message
+- selected text stays in tab navigation/local metadata and the annotation store; it never changes
+  the main draft text
 - the panel does not yet implement attachments, approvals or model selection
 
 ## Install
@@ -66,10 +79,14 @@ Fully quit and relaunch DSH after installing.
 
 ## Known limitations
 
-- the selection is capped at 2000 characters; the remainder is not quoted
-- **Add to chat** depends on the Host input shell; when the composer is temporarily not writable the
-  capsule only shows a notice and leaves the draft untouched
-- depends on the right-sidebar tab, Session create and input-shell APIs; DSH upgrades may need
+- annotation context is visible as plain text at the start of the sent message
+- at most 20 annotations per Session, 20000 characters each; side-chat quotes still carry the first
+  2000 characters only
+- annotation clearing is optimistic: once the Host accepts the message the chips clear; withdrawing
+  the queued message afterwards does not restore them
+- the chip row depends on the composer DOM contract (`[data-composer-card]` / `[data-input-scroll]`)
+  and needs adaptation if DSH changes that layout
+- depends on the right-sidebar tab, Session create and prompt APIs; DSH upgrades may need
   compatibility updates
 - a tab open at app shutdown closes automatically on the next start; the child remains archived
 - the side chat inherits no parent history; its context is the quote plus follow-up questions
@@ -82,8 +99,9 @@ node scripts/check.mjs
 ```
 
 The zero-dependency suite covers manifest/patch/locale/icon, parameter parsing, node-to-message
-mapping, tab definition, the selection gate, quote formatting, the add-to-chat insertion text, the
-capsule structure and the factory surface — 17 checks.
+mapping, tab definition, the selection gate, quote formatting, annotation context, the annotation
+store (add/remove/persist), prompt injection/restore, the capsule and composer annotation layer, and
+the factory surface — 20 checks.
 
 ## License
 

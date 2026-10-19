@@ -53,7 +53,7 @@ function load() {
 
 await check('manifest declares a DSH bundle and web client half', () => {
   assert.equal(manifest.name, 'dsh-quick-fork')
-  assert.equal(manifest.version, '0.5.0')
+  assert.equal(manifest.version, '0.6.0')
   assert.equal(manifest.license, 'MIT')
   assert.equal(manifest.main, 'index.js')
   assert.equal(manifest.exports['./client'], './client.js')
@@ -166,18 +166,74 @@ await check('selected text becomes a Markdown quote block', () => {
   assert.equal(plugin.__test.quoteBlockOf(null), '')
 })
 
-await check('add to chat separates the quote from an existing draft', () => {
+await check('selected text becomes numbered model context', () => {
   const { plugin } = load()
-  assert.equal(plugin.__test.insertionTextOf('why?', ''), '> why?\n\n')
-  assert.equal(plugin.__test.insertionTextOf('why?', 'question'), '\n\n> why?\n\n')
-  assert.equal(plugin.__test.insertionTextOf('why?', '   '), '> why?\n\n')
-  assert.equal(plugin.__test.insertionTextOf('   ', ''), '')
+  assert.equal(plugin.__test.annotationContextOf([]), '')
+  assert.equal(
+    plugin.__test.annotationContextOf([{ text: 'one' }, { text: '  two  ' }]),
+    'Selected text 1:\none\n\nSelected text 2:\ntwo',
+  )
 })
 
-await check('selection layer renders one capsule with two actions', () => {
+await check('annotation store adds, removes and persists per session', () => {
+  const { plugin, storage } = load()
+  assert.equal(plugin.__test.addAnnotation('s1', 'alpha'), true)
+  assert.equal(plugin.__test.addAnnotation('s1', '   '), false)
+  assert.equal(plugin.__test.annotationItemsOf('s1').length, 1)
+  assert.equal(plugin.__test.annotationItemsOf('s2').length, 0)
+  const id = plugin.__test.annotationItemsOf('s1')[0].id
+  assert.equal(plugin.__test.removeAnnotation('s1', id), true)
+  assert.equal(plugin.__test.annotationItemsOf('s1').length, 0)
+  assert.equal(storage.has('dsh.quickFork.annotations'), false)
+})
+
+await check('pending annotations ride on the next prompt and clear on success', async () => {
+  const { plugin } = load()
+  const calls = []
+  const session = {
+    async prompt(content, mode) {
+      calls.push({ content: JSON.parse(JSON.stringify(content)), mode })
+      return { ok: true }
+    },
+  }
+  const ctx = { sessions: { binding: (id) => (id === 's1' ? { session } : undefined) } }
+  plugin.__test.addAnnotation('s1', 'selected passage')
+  plugin.__test.ensureAnnotationPromptWrapper(ctx, 's1')
+  const result = await session.prompt([{ type: 'text', text: 'hello' }], 'queue')
+  assert.equal(result.ok, true)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].content.length, 2)
+  assert.equal(calls[0].content[0].text, 'Selected text 1:\nselected passage')
+  assert.equal(calls[0].content[1].text, 'hello')
+  assert.equal(plugin.__test.annotationItemsOf('s1').length, 0)
+  const again = await session.prompt([{ type: 'text', text: 'second' }], 'queue')
+  assert.equal(again.ok, true)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[1].content.length, 1)
+  assert.equal(calls[1].content[0].text, 'second')
+})
+
+await check('a rejected prompt restores the annotations', async () => {
+  const { plugin } = load()
+  const session = {
+    async prompt() {
+      return { ok: false, error: { code: 'test', message: 'rejected' } }
+    },
+  }
+  const ctx = { sessions: { binding: () => ({ session }) } }
+  plugin.__test.addAnnotation('s2', 'keep me')
+  plugin.__test.ensureAnnotationPromptWrapper(ctx, 's2')
+  const result = await session.prompt([{ type: 'text', text: 'hi' }], 'queue')
+  assert.equal(result.ok, false)
+  assert.equal(plugin.__test.annotationItemsOf('s2').length, 1)
+})
+
+await check('selection capsule and composer annotation layer are present', () => {
   assert(clientSource.includes('dshqf-capsule'))
   assert(clientSource.includes("'bubble.addToChat'"))
   assert(clientSource.includes("'bubble.addToTempChat'"))
+  assert(clientSource.includes('dshqf-annotationPanel'))
+  assert(clientSource.includes('ensureAnnotationPromptWrapper'))
   assert.equal(clientSource.includes('dshqf-bubble'), false)
 })
 

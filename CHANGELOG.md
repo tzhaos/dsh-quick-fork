@@ -1,3 +1,28 @@
+## [0.6.0] - 2026-10-19
+
+### Changed
+
+- “Add to chat” no longer inserts a Markdown quote into the draft. The selected passage becomes a
+  numbered annotation chip inside the composer card (conversation-attachment style), with a hover
+  panel showing the full text and an × to remove it.
+- Annotations are stored per Session in `localStorage` and survive page reloads.
+- On the next prompt, pending annotations travel as a leading `Selected text N:` text block; they
+  clear when the Host accepts the message and are restored when the prompt is rejected.
+
+### Added
+
+- Composer annotation layer mounted through the `conversation.input.overlay` slot: a row inserted
+  inside `[data-composer-card]` before the editor, with re-insertion when the card re-renders.
+- Hover/focus panel for each annotation, positioned above the chip and clamped to the viewport.
+- Session `prompt` wrapper that prepends annotation context to the outgoing content array.
+- Zero-dependency checks for the annotation context, store and prompt injection/restore.
+
+### Verified
+
+- `node scripts/check.mjs`: 20 checks green.
+- Isolated DSH web instance: real-mouse add/remove/renumber chips, hover panel with full text,
+  reload persistence, typing re-render stability and a clean console.
+
 ## [0.5.0] - 2026-10-19
 
 ### Changed
