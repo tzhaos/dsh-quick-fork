@@ -1,11 +1,12 @@
 /**
  * Quick Fork — browser half of `dsh-quick-fork`.
  *
- * Selecting text in a conversation shows a small “复创” action. Clicking it
- * forks the current Session and opens a temporary conversation in the native
- * right sidebar. The tab owns its child Session only for this app run: closing
- * the tab archives the child, and the next app start closes any restored tab
- * before it can fork again.
+ * Selecting text in a conversation shows a compact two-segment capsule above
+ * the selection. “Add to chat” inserts the passage as a Markdown quote into the
+ * main composer through the Host input shell; “Ask in side chat” opens a
+ * temporary conversation in the native right sidebar. The tab owns its child
+ * Session only for this app run: closing the tab archives the child, and the
+ * next app start closes any restored tab before it can fork again.
  *
  * The panel is intentionally a compact side-chat surface: quote, transcript,
  * composer. It does not replace or clone the main conversation layout.
@@ -19,7 +20,7 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
     const { createPortal } = require('react-dom')
-    const { useEffect, useMemo, useRef, useState } = React
+    const { useEffect, useLayoutEffect, useMemo, useRef, useState } = React
     const h = React.createElement
 
     const NS = 'quickFork'
@@ -31,9 +32,13 @@ window.__ModuleLoader__.load({
     const PAGE_RUN = randomId()
 
     const zh = {
-      'tab.title': '复创',
-      'bubble.label': '复创',
-      'bubble.aria': '用选中内容开一个临时侧边对话',
+      'tab.title': '临时对话',
+      'bubble.aria': '选中文字操作',
+      'bubble.addToChat': '添加到对话',
+      'bubble.addToChatAria': '把选中内容添加到当前对话的输入框',
+      'bubble.addToTempChat': '添加到临时对话',
+      'bubble.addToTempChatAria': '用选中内容开一个临时侧边对话',
+      'bubble.addFailed': '当前对话的输入框暂时不可写入',
       'panel.quote': '选中内容',
       'panel.placeholder': '针对这段内容继续提问…',
       'panel.send': '发送',
@@ -48,9 +53,13 @@ window.__ModuleLoader__.load({
       'guide.description': '不打断主线，针对选中内容追问',
     }
     const en = {
-      'tab.title': 'Fork',
-      'bubble.label': 'Fork',
-      'bubble.aria': 'Open a temporary side conversation with the selected text',
+      'tab.title': 'Side chat',
+      'bubble.aria': 'Selection actions',
+      'bubble.addToChat': 'Add to chat',
+      'bubble.addToChatAria': 'Add the selected text to the current conversation input',
+      'bubble.addToTempChat': 'Ask in side chat',
+      'bubble.addToTempChatAria': 'Open a temporary side conversation with the selected text',
+      'bubble.addFailed': 'The current conversation input is not writable right now',
       'panel.quote': 'Selected text',
       'panel.placeholder': 'Ask about this passage…',
       'panel.send': 'Send',
@@ -129,6 +138,31 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Format a selected passage as a Markdown blockquote.
+     * @param {string} text - selected plain text.
+     * @returns {string} quoted Markdown, or an empty string.
+     */
+    function quoteBlockOf(text) {
+      if (typeof text !== 'string') return ''
+      const trimmed = text.trim()
+      if (trimmed === '') return ''
+      return trimmed.split(/\r?\n/).map((line) => '> ' + line).join('\n')
+    }
+
+    /**
+     * Build the text inserted by “Add to chat”.
+     * @param {string} text - selected plain text.
+     * @param {string} draft - current composer draft.
+     * @returns {string} blockquote separated from the surrounding draft by blank lines.
+     */
+    function insertionTextOf(text, draft) {
+      const block = quoteBlockOf(text)
+      if (block === '') return ''
+      const lead = typeof draft === 'string' && draft.trim() !== '' ? '\n\n' : ''
+      return lead + block + '\n\n'
+    }
+
+    /**
      * Put the selected passage in front of the first prompt only.
      * @param {string} text - user's typed prompt.
      * @param {string} quote - selected passage.
@@ -136,9 +170,74 @@ window.__ModuleLoader__.load({
      * @returns {string} prompt content for the first submission.
      */
     function composePrompt(text, quote, alreadySent) {
-      if (alreadySent || typeof quote !== 'string' || quote.trim() === '') return text
-      const quoted = quote.trim().split(/\r?\n/).map((line) => '> ' + line).join('\n')
+      if (alreadySent) return text
+      const quoted = quoteBlockOf(quote)
+      if (quoted === '') return text
       return quoted + '\n\n' + text
+    }
+
+    /**
+     * Resolve the live composer shell of a Session, if the host exposes it.
+     * @param {object} ctx - root client context.
+     * @param {string} sessionId - owning Session id.
+     * @returns {object|null} input shell, or null when the Session has no live scope.
+     */
+    function inputShellOf(ctx, sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return null
+      try {
+        const sessions = ctx.sessions
+        if (sessions === null || sessions === undefined || typeof sessions.scope !== 'function') return null
+        const scope = sessions.scope(sessionId)
+        if (scope === null || scope === undefined || typeof scope.get !== 'function') return null
+        const conversation = scope.get('conversation')
+        const shell = conversation?.input?.for?.(scope)
+        return shell !== null && shell !== undefined ? shell : null
+      } catch {
+        return null
+      }
+    }
+
+    /**
+     * Insert the selected passage as a quote into the current conversation's composer.
+     * The primary path inserts one undoable plain-text edit at the caret; when the
+     * insertion point is stale the draft is rewritten with the same quote.
+     * @param {object} ctx - root client context.
+     * @param {string} sessionId - owning Session id.
+     * @param {string} text - selected plain text.
+     * @returns {boolean} whether the draft changed.
+     */
+    function addSelectionToChat(ctx, sessionId, text) {
+      const shell = inputShellOf(ctx, sessionId)
+      if (shell === null) return false
+      try {
+        const draft = typeof shell.snapshot?.draft === 'string' ? shell.snapshot.draft : ''
+        const insertion = insertionTextOf(text, draft)
+        if (insertion === '') return false
+        const actions = shell.actions
+        let inserted = false
+        if (typeof actions?.captureInsertion === 'function' && typeof actions?.insertText === 'function') {
+          try {
+            inserted = actions.insertText(insertion, actions.captureInsertion()) === true
+          } catch {
+            inserted = false
+          }
+        }
+        if (!inserted && typeof actions?.setDraft === 'function') {
+          const next = draft.trim() === '' ? insertion : draft.replace(/\s+$/, '') + '\n\n' + quoteBlockOf(text) + '\n\n'
+          actions.setDraft(next)
+          inserted = true
+        }
+        if (inserted) {
+          try {
+            shell.focus?.()
+          } catch {
+            // Focus is best effort; the draft is already updated.
+          }
+        }
+        return inserted
+      } catch {
+        return false
+      }
     }
 
     /**
@@ -263,12 +362,35 @@ window.__ModuleLoader__.load({
       return target.closest('[data-dsh-quick-fork-panel]') !== null
     }
 
+    /**
+     * @param {unknown} target - selection anchor element.
+     * @returns {boolean} whether the target is part of a text editor.
+     */
+    function insideEditable(target) {
+      if (target === null || target === undefined || typeof target.closest !== 'function') return false
+      return target.closest('[contenteditable]:not([contenteditable="false"]), textarea, input') !== null
+    }
+
+    /**
+     * @param {unknown} target - selection anchor element.
+     * @returns {string} Session id owning the selection, or ''.
+     */
+    function sessionIdForSelection(target) {
+      if (target !== null && target !== undefined && typeof target.closest === 'function') {
+        const host = target.closest('[data-conversation-session]')
+        const id = host?.getAttribute?.('data-conversation-session') ?? ''
+        if (id !== '') return id
+      }
+      return currentSessionIdOf()
+    }
+
     /** @param {object} options @returns {boolean} */
-    function canOfferFork(options) {
+    function canOfferSelection(options) {
       return typeof options.text === 'string' && options.text.trim() !== ''
-        && typeof options.parentSessionId === 'string' && options.parentSessionId !== ''
+        && typeof options.sessionId === 'string' && options.sessionId !== ''
         && options.inPanel !== true
-        && isTempChild(options.parentSessionId) !== true
+        && options.inEditable !== true
+        && isTempChild(options.sessionId) !== true
     }
 
     /** Get the UI conversation chat target for a binding, if the host exposes it. */
@@ -307,17 +429,20 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Build the selection action layer.
+     * Build the selection action layer: one capsule, two actions.
      * @param {object} ctx - root client context.
      * @returns {Function} React component.
      */
     function createSelectionLayer(ctx) {
       return function SelectionLayer() {
         const [bubble, setBubble] = useState(null)
+        const [position, setPosition] = useState(null)
         const bubbleRef = useRef(null)
-        bubbleRef.current = bubble
         useEffect(() => {
-          const clear = () => setBubble(null)
+          const clear = () => {
+            setBubble(null)
+            setPosition(null)
+          }
           const update = () => {
             try {
               const selection = window.getSelection?.()
@@ -328,12 +453,10 @@ window.__ModuleLoader__.load({
               }
               const anchor = selection.anchorNode
               const element = anchor?.nodeType === 3 ? anchor.parentElement : anchor
-              if (insideQuickForkPanel(element)) {
-                clear()
-                return
-              }
-              const parentSessionId = currentSessionIdOf()
-              if (!canOfferFork({ text, parentSessionId, inPanel: false })) {
+              const inPanel = insideQuickForkPanel(element)
+              const inEditable = insideEditable(element)
+              const sessionId = sessionIdForSelection(element)
+              if (!canOfferSelection({ text, sessionId, inPanel, inEditable })) {
                 clear()
                 return
               }
@@ -342,7 +465,7 @@ window.__ModuleLoader__.load({
                 clear()
                 return
               }
-              setBubble({ text: text.slice(0, 2000), x: rect.left + rect.width / 2, y: rect.top, parentSessionId })
+              setBubble({ text: text.slice(0, 2000), x: rect.left + rect.width / 2, y: rect.top, sessionId })
             } catch {
               clear()
             }
@@ -360,31 +483,65 @@ window.__ModuleLoader__.load({
             window.removeEventListener('resize', clear)
           }
         }, [])
+        // Measure the capsule before painting so it never flashes at a stale spot.
+        useLayoutEffect(() => {
+          if (bubble === null || bubbleRef.current === null) {
+            setPosition(null)
+            return
+          }
+          const rect = bubbleRef.current.getBoundingClientRect()
+          const viewport = typeof window.innerWidth === 'number' ? window.innerWidth : 0
+          const left = Math.min(Math.max(8, bubble.x - rect.width / 2), Math.max(8, viewport - rect.width - 8))
+          const top = Math.max(8, bubble.y - rect.height - 8)
+          setPosition({ left, top })
+        }, [bubble])
         if (bubble === null) return null
-        const open = () => {
+        const close = () => {
+          setBubble(null)
+          setPosition(null)
+        }
+        const addToChat = () => {
+          const added = addSelectionToChat(ctx, bubble.sessionId, bubble.text)
+          if (!added) {
+            try { inputShellOf(ctx, bubble.sessionId)?.notify?.('error', tRef(ctx, 'bubble.addFailed')) } catch { /* notice is best effort */ }
+          }
+          close()
+        }
+        const openSideChat = () => {
           const sidebar = ctx.get('sidebarRight')
           if (sidebar === null || sidebar === undefined || typeof sidebar.openTab !== 'function') {
-            setBubble(null)
+            close()
             return
           }
           sidebar.openTab(KIND, {
-            params: { parentSessionId: bubble.parentSessionId, quote: bubble.text },
+            params: { parentSessionId: bubble.sessionId, quote: bubble.text },
           })
-          setBubble(null)
+          close()
         }
-        return createPortal(h('button', {
-          type: 'button',
-          className: 'dshqf-bubble',
-          'data-dsh-quick-fork-bubble': '',
+        const style = position === null
+          ? { left: '-9999px', top: '-9999px' }
+          : { left: position.left + 'px', top: position.top + 'px' }
+        return createPortal(h('div', {
+          className: 'dshqf-capsule',
+          ref: bubbleRef,
+          role: 'toolbar',
           'aria-label': tRef(ctx, 'bubble.aria'),
-          title: tRef(ctx, 'bubble.aria'),
-          style: {
-            left: Math.max(12, bubble.x) + 'px',
-            top: Math.max(12, bubble.y - 36) + 'px',
-          },
+          'data-dsh-quick-fork-bubble': '',
+          style,
           onMouseDown: (event) => { event.preventDefault?.() },
-          onClick: open,
-        }, h('span', { className: 'dshqf-bubbleMark', 'aria-hidden': true }, '⑂'), h('span', null, tRef(ctx, 'bubble.label'))), document.body)
+        },
+          h('button', {
+            type: 'button',
+            className: 'dshqf-capsuleBtn',
+            'aria-label': tRef(ctx, 'bubble.addToChatAria'),
+            onClick: addToChat,
+          }, tRef(ctx, 'bubble.addToChat')),
+          h('button', {
+            type: 'button',
+            className: 'dshqf-capsuleBtn',
+            'aria-label': tRef(ctx, 'bubble.addToTempChatAria'),
+            onClick: openSideChat,
+          }, tRef(ctx, 'bubble.addToTempChat'))), document.body)
       }
     }
 
@@ -636,9 +793,12 @@ window.__ModuleLoader__.load({
 
     /** Small stylesheet. */
     const CSS = `
-.dshqf-bubble{position:fixed;z-index:120;transform:translateX(-50%);display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border:1px solid var(--dsw-alias-border-l3);border-radius:999px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-elevation-soft);font:inherit;font-size:12px;cursor:pointer}
-.dshqf-bubble:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dshqf-bubbleMark{font-size:14px}
+.dshqf-capsule{position:fixed;z-index:120;display:inline-flex;align-items:stretch;height:30px;border:1px solid var(--dsw-alias-border-l3);border-radius:999px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);box-shadow:var(--dsw-elevation-soft);font:inherit;font-size:12px;line-height:1;overflow:hidden}
+.dshqf-capsuleBtn{appearance:none;border:0;background:transparent;color:inherit;font:inherit;font-size:12px;line-height:1;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;cursor:pointer}
+.dshqf-capsuleBtn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dshqf-capsuleBtn:active{background:var(--dsw-alias-interactive-bg-active)}
+.dshqf-capsuleBtn:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-2px}
+.dshqf-capsuleBtn+.dshqf-capsuleBtn{border-left:1px solid var(--dsw-alias-border-l2)}
 .dshqf-panel{display:flex;flex-direction:column;gap:10px;height:100%;min-height:0;padding:10px;box-sizing:border-box;color:var(--dsw-alias-label-primary);font-size:13px}
 .dshqf-state,.dshqf-empty{color:var(--dsw-alias-label-tertiary);font-size:12px;padding:8px 2px}
 .dshqf-quote{border-left:2px solid var(--dsw-alias-state-business-primary);padding:6px 8px;background:var(--dsw-alias-interactive-bg-hover);border-radius:6px}
@@ -716,7 +876,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['sessions', 'slots', 'locale'],
       apply,
-      __test: { parseForkParams, nodesToMessages, tabDefinitionFor, canOfferFork, composePrompt, maxSeqOf },
+      __test: { parseForkParams, nodesToMessages, tabDefinitionFor, canOfferSelection, composePrompt, quoteBlockOf, insertionTextOf, maxSeqOf },
     }
   },
 })

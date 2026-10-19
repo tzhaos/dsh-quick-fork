@@ -1,3 +1,32 @@
+## [0.5.0] - 2026-10-19
+
+### Changed
+
+- The single “复创 / Fork” selection action is now one compact capsule split into two buttons:
+  **添加到对话 / Add to chat** quotes the selected passage into the current conversation composer;
+  **添加到临时对话 / Ask in side chat** keeps the temporary right-sidebar conversation.
+- Renamed the side-chat tab from “复创 / Fork” to “临时对话 / Side chat”, and the plugin display
+  name from “快速复创 / Quick Fork” to “选中操作 / Selection Actions”.
+
+### Added
+
+- Add-to-chat writes through the Host input shell (`captureInsertion()` + `insertText()`), so the
+  quote lands at the caret as one undoable plain-text edit and focus returns to the composer. A
+  stale insertion point falls back to rewriting the draft with `setDraft`.
+- Selected text is formatted as a Markdown blockquote and separated from an existing draft by blank
+  lines.
+- The capsule is measured before paint and clamped inside the viewport.
+
+### Fixed
+
+- The selection capsule no longer appears for selections inside editable composers (the main
+  composer, queue editors and the side-chat input), which made “add to chat” meaningless or
+  recursive.
+
+### Verified
+
+- `node scripts/check.mjs`: 17 checks green.
+
 ## [0.4.0] - 2026-10-19
 
 ### Added

@@ -43,7 +43,7 @@ function load() {
   }
   vm.runInNewContext(clientSource, sandbox, { filename: 'client.js' })
   const plugin = loaded.factory((id) => {
-    if (id === 'react') return { createElement: () => null, useEffect() {}, useMemo: (fn) => fn(), useRef: () => ({}), useState: (value) => [value, () => {}] }
+    if (id === 'react') return { createElement: () => null, useEffect() {}, useLayoutEffect() {}, useMemo: (fn) => fn(), useRef: () => ({}), useState: (value) => [value, () => {}] }
     if (id === 'react-dom') return { createPortal: (element) => element }
     if (id === '@deepseek-ai/dsh-client-ui-primitives') return { MarkdownText: () => null, IconSparkleRegular: () => null }
     throw new Error('unexpected require ' + id)
@@ -53,7 +53,7 @@ function load() {
 
 await check('manifest declares a DSH bundle and web client half', () => {
   assert.equal(manifest.name, 'dsh-quick-fork')
-  assert.equal(manifest.version, '0.4.0')
+  assert.equal(manifest.version, '0.5.0')
   assert.equal(manifest.license, 'MIT')
   assert.equal(manifest.main, 'index.js')
   assert.equal(manifest.exports['./client'], './client.js')
@@ -159,6 +159,28 @@ await check('the selected passage is included in the first prompt only', () => {
   assert.equal(plugin.__test.composePrompt('why?', '   ', false), 'why?')
 })
 
+await check('selected text becomes a Markdown quote block', () => {
+  const { plugin } = load()
+  assert.equal(plugin.__test.quoteBlockOf('  line one\nline two  '), '> line one\n> line two')
+  assert.equal(plugin.__test.quoteBlockOf('   '), '')
+  assert.equal(plugin.__test.quoteBlockOf(null), '')
+})
+
+await check('add to chat separates the quote from an existing draft', () => {
+  const { plugin } = load()
+  assert.equal(plugin.__test.insertionTextOf('why?', ''), '> why?\n\n')
+  assert.equal(plugin.__test.insertionTextOf('why?', 'question'), '\n\n> why?\n\n')
+  assert.equal(plugin.__test.insertionTextOf('why?', '   '), '> why?\n\n')
+  assert.equal(plugin.__test.insertionTextOf('   ', ''), '')
+})
+
+await check('selection layer renders one capsule with two actions', () => {
+  assert(clientSource.includes('dshqf-capsule'))
+  assert(clientSource.includes("'bubble.addToChat'"))
+  assert(clientSource.includes("'bubble.addToTempChat'"))
+  assert.equal(clientSource.includes('dshqf-bubble'), false)
+})
+
 await check('the side chat is listed in the right-sidebar guide', () => {
   const { plugin } = load()
   const definition = plugin.__test.tabDefinitionFor((key) => key)
@@ -172,10 +194,13 @@ await check('the side chat is listed in the right-sidebar guide', () => {
 await check('selection gate rejects panel selections and temp children', () => {
   const { plugin, storage } = load()
   storage.set('dsh.quickFork.children', JSON.stringify(['child-1']))
-  assert.equal(plugin.__test.canOfferFork({ text: 'x', parentSessionId: 'parent', inPanel: false }), true)
-  assert.equal(plugin.__test.canOfferFork({ text: '   ', parentSessionId: 'parent', inPanel: false }), false)
-  assert.equal(plugin.__test.canOfferFork({ text: 'x', parentSessionId: 'child-1', inPanel: false }), false)
-  assert.equal(plugin.__test.canOfferFork({ text: 'x', parentSessionId: 'parent', inPanel: true }), false)
+  assert.equal(plugin.__test.canOfferSelection({ text: 'x', sessionId: 'parent', inPanel: false }), true)
+  assert.equal(plugin.__test.canOfferSelection({ text: 'x', sessionId: 'parent', inPanel: false, inEditable: false }), true)
+  assert.equal(plugin.__test.canOfferSelection({ text: '   ', sessionId: 'parent', inPanel: false }), false)
+  assert.equal(plugin.__test.canOfferSelection({ text: 'x', sessionId: 'child-1', inPanel: false }), false)
+  assert.equal(plugin.__test.canOfferSelection({ text: 'x', sessionId: 'parent', inPanel: true }), false)
+  assert.equal(plugin.__test.canOfferSelection({ text: 'x', sessionId: 'parent', inPanel: false, inEditable: true }), false)
+  assert.equal(plugin.__test.canOfferSelection({ text: 'x', sessionId: '', inPanel: false }), false)
 })
 
 await check('factory exposes apply and the expected injected services', () => {
