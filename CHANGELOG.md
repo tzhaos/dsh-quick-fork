@@ -1,3 +1,16 @@
+## [0.2.0] - 2026-10-19
+
+### Added
+
+- The selected passage is included as a Markdown quote in the first side-chat prompt, then not
+  repeated on later messages.
+- Assistant messages render through the Host `MarkdownText` primitive.
+- The composer focuses when the side panel binds to its child Session.
+
+### Verified
+
+- `node scripts/check.mjs`: 12 checks green.
+
 # Changelog
 
 All notable changes to this project are documented in this file.

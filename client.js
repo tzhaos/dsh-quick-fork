@@ -17,6 +17,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-quick-fork',
   factory(require) {
     const React = require('react')
+    const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
     const { createPortal } = require('react-dom')
     const { useEffect, useMemo, useRef, useState } = React
     const h = React.createElement
@@ -91,6 +92,19 @@ window.__ModuleLoader__.load({
         parentSessionId,
         quote: typeof params.quote === 'string' ? params.quote : '',
       }
+    }
+
+    /**
+     * Put the selected passage in front of the first prompt only.
+     * @param {string} text - user's typed prompt.
+     * @param {string} quote - selected passage.
+     * @param {boolean} alreadySent - whether the quote was already sent.
+     * @returns {string} prompt content for the first submission.
+     */
+    function composePrompt(text, quote, alreadySent) {
+      if (alreadySent || typeof quote !== 'string' || quote.trim() === '') return text
+      const quoted = quote.trim().split(/\r?\n/).map((line) => '> ' + line).join('\n')
+      return quoted + '\n\n' + text
     }
 
     /**
@@ -350,6 +364,8 @@ window.__ModuleLoader__.load({
         const [error, setError] = useState('')
         const [sending, setSending] = useState(false)
         const [expired, setExpired] = useState(false)
+        const quoteSentRef = useRef(false)
+        const inputRef = useRef(null)
 
         // Fork once per tab. A tab restored after the app restarted has no
         // matching run marker: it is expired and must not create another child.
@@ -360,6 +376,7 @@ window.__ModuleLoader__.load({
             return undefined
           }
           const meta = loadMeta(tabId)
+          if (meta !== null) quoteSentRef.current = meta.quoteSent === true
           if (meta !== null && meta.runId !== RUN_ID) {
             setExpired(true)
             setError(tRef(ctx, 'panel.expired'))
@@ -430,21 +447,33 @@ window.__ModuleLoader__.load({
           }
         }, [binding])
 
+        useEffect(() => {
+          if (binding === null) return
+          inputRef.current?.focus?.()
+        }, [binding])
+
         const submit = async () => {
           const text = draft.trim()
           if (text === '' || sending || binding === null) return
           setSending(true)
           setError('')
+          const promptText = composePrompt(text, params?.quote ?? '', quoteSentRef.current)
           try {
             const session = binding.session
             const submission = typeof session.beginSubmission === 'function'
-              ? session.beginSubmission({ mode: 'queue', text, attachments: [] })
+              ? session.beginSubmission({ mode: 'queue', text: promptText, attachments: [] })
               : undefined
-            const result = await session.prompt([{ type: 'text', text }], 'queue', undefined, submission?.requestId)
+            const result = await session.prompt([{ type: 'text', text: promptText }], 'queue', undefined, submission?.requestId)
             if (result?.ok !== true) {
               try { submission?.abandon?.() } catch { /* ignore */ }
               setError(tRef(ctx, 'panel.failed'))
-            } else setDraft('')
+            } else {
+              setDraft('')
+              if ((params?.quote ?? '') !== '') {
+                quoteSentRef.current = true
+                saveMeta(tabId, { ...(loadMeta(tabId) ?? {}), quoteSent: true })
+              }
+            }
           } catch (sendError) {
             setError(String(sendError?.message ?? sendError))
           } finally {
@@ -472,7 +501,9 @@ window.__ModuleLoader__.load({
           className: 'dshqf-msg dshqf-' + message.role + (message.error ? ' dshqf-error' : ''),
         },
         h('div', { className: 'dshqf-role' }, message.role === 'assistant' ? 'DSH' : message.role),
-        h('div', { className: 'dshqf-text' }, message.text)))
+        message.role === 'assistant'
+          ? h(primitives.MarkdownText, { text: message.text, streaming: running })
+          : h('div', { className: 'dshqf-text' }, message.text)))
         const log = h('div', { className: 'dshqf-log' }, empty, rows)
         const errorBox = error !== '' ? h('div', { className: 'dshqf-errorText' }, error) : null
         const actions = h('div', { className: 'dshqf-actions' },
@@ -483,6 +514,7 @@ window.__ModuleLoader__.load({
           h('button', { type: 'button', className: 'dshqf-send', disabled: sending || draft.trim() === '', onClick: () => { void submit() } }, tRef(ctx, 'panel.send')))
         const composer = h('div', { className: 'dshqf-composer' },
           h('textarea', {
+            ref: inputRef,
             className: 'dshqf-input',
             rows: 2,
             value: draft,
@@ -578,7 +610,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['sessions', 'slots', 'locale'],
       apply,
-      __test: { parseForkParams, nodesToMessages, tabDefinitionFor, canOfferFork },
+      __test: { parseForkParams, nodesToMessages, tabDefinitionFor, canOfferFork, composePrompt },
     }
   },
 })

@@ -5,7 +5,7 @@
 Select text in a conversation, click **Fork**, and open a **temporary side
 conversation** in the right sidebar.
 
-> `0.1.0` is an early usable version. It opens a native right-sidebar tab but
+> `0.2.0` is an early usable version. It opens a native right-sidebar tab but
 > uses its own compact side-chat panel; it does not clone the main conversation
 > component tree.
 
@@ -58,7 +58,7 @@ Fully quit and relaunch DSH after installing.
 
 ## Known limitations
 
-- `0.1.0` is a compact side chat, not a full replica of the main conversation
+- `0.2.0` is a compact side chat, not a full replica of the main conversation
 - depends on the right-sidebar tab and Session fork APIs; DSH upgrades may need
   compatibility updates
 - a tab open at app shutdown closes automatically on the next start; the child

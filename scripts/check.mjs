@@ -45,6 +45,7 @@ function load() {
   const plugin = loaded.factory((id) => {
     if (id === 'react') return { createElement: () => null, useEffect() {}, useMemo: (fn) => fn(), useRef: () => ({}), useState: (value) => [value, () => {}] }
     if (id === 'react-dom') return { createPortal: (element) => element }
+    if (id === '@deepseek-ai/dsh-client-ui-primitives') return { MarkdownText: () => null }
     throw new Error('unexpected require ' + id)
   })
   return { plugin, storage }
@@ -52,7 +53,7 @@ function load() {
 
 await check('manifest declares a DSH bundle and web client half', () => {
   assert.equal(manifest.name, 'dsh-quick-fork')
-  assert.equal(manifest.version, '0.1.0')
+  assert.equal(manifest.version, '0.2.0')
   assert.equal(manifest.license, 'MIT')
   assert.equal(manifest.main, 'index.js')
   assert.equal(manifest.exports['./client'], './client.js')
@@ -80,7 +81,7 @@ await check('bundle patch inserts exactly one quick-fork row', () => {
 
 await check('client requires only frozen React modules', () => {
   const requires = [...clientSource.matchAll(/require\('([^']+)'\)/g)].map((match) => match[1])
-  assert.deepEqual(requires.sort(), ['react', 'react-dom'].sort())
+  assert.deepEqual(requires.sort(), ['@deepseek-ai/dsh-client-ui-primitives', 'react', 'react-dom'].sort())
 })
 
 await check('locale files carry title and description', () => {
@@ -133,6 +134,13 @@ await check('tab definition is multi-instance and has a title', () => {
   assert.equal(definition.kind, 'quick-fork')
   assert.equal(definition.multiple, true)
   assert.equal(definition.title(), 'tab.title')
+})
+
+await check('the selected passage is included in the first prompt only', () => {
+  const { plugin } = load()
+  assert.equal(plugin.__test.composePrompt('why?', 'line one\nline two', false), '> line one\n> line two\n\nwhy?')
+  assert.equal(plugin.__test.composePrompt('why?', 'line one', true), 'why?')
+  assert.equal(plugin.__test.composePrompt('why?', '   ', false), 'why?')
 })
 
 await check('selection gate rejects panel selections and temp children', () => {
