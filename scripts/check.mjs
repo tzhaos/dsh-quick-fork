@@ -53,7 +53,7 @@ function load() {
 
 await check('manifest declares a DSH bundle and web client half', () => {
   assert.equal(manifest.name, 'dsh-quick-fork')
-  assert.equal(manifest.version, '0.2.0')
+  assert.equal(manifest.version, '0.3.0')
   assert.equal(manifest.license, 'MIT')
   assert.equal(manifest.main, 'index.js')
   assert.equal(manifest.exports['./client'], './client.js')
@@ -125,6 +125,22 @@ await check('durable nodes become simple side-chat rows', () => {
     { key: 't3', role: 'tool', text: 'tool output' },
     { key: 'e4', role: 'error', text: 'boom' },
   ])
+})
+
+await check('inherited parent history can be hidden behind the fork baseline', () => {
+  const { plugin } = load()
+  const snapshot = {
+    nodes: [
+      { kind: 'user', seq: 3, content: [{ type: 'text', text: 'parent' }] },
+      { kind: 'assistant', seq: 4, blocks: [{ kind: 'text', text: 'inherited' }] },
+      { kind: 'user', seq: 9, content: [{ type: 'text', text: 'side' }] },
+    ],
+  }
+  assert.equal(plugin.__test.maxSeqOf(snapshot), 9)
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(plugin.__test.nodesToMessages(snapshot, 4))),
+    [{ key: 'u9', role: 'user', text: 'side' }],
+  )
 })
 
 await check('tab definition is multi-instance and has a title', () => {

@@ -1,3 +1,19 @@
+## [0.3.0] - 2026-10-19
+
+### Changed
+
+- Side chats now use a fresh blank `sessions.create` child instead of `sessions.fork`; they work while
+  the parent turn is running and no longer show the inherited parent transcript.
+- The child stays active (not archived) while its tab is open, so prompts stream; closing the tab
+  archives it. `dsh-sidebar-sections` hides tracked side children from the sidebar.
+- Tool output is collapsed into a `<details>` block with a bounded scroll area.
+- The transcript auto-scrolls as messages and streaming updates arrive.
+- The run id survives a page reload via `sessionStorage` but still rotates on app restart.
+
+### Verified
+
+- `node scripts/check.mjs`: 13 checks green.
+
 ## [0.2.0] - 2026-10-19
 
 ### Added

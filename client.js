@@ -27,7 +27,7 @@ window.__ModuleLoader__.load({
     const KIND = 'quick-fork'
     const META_PREFIX = 'dsh.quickFork.tab.'
     const CHILD_KEY = 'dsh.quickFork.children'
-    const RUN_ID = randomId()
+    const RUN_ID = runIdForThisTab()
 
     const zh = {
       'tab.title': '复创',
@@ -58,6 +58,20 @@ window.__ModuleLoader__.load({
       'panel.expired': 'This temporary conversation expired',
       'panel.close': 'Close',
       'panel.working': 'Running…',
+    }
+
+    /** Keep side tabs valid across a page reload, but not across an app restart. */
+    function runIdForThisTab() {
+      try {
+        const key = 'dsh.quickFork.runId'
+        const existing = sessionStorage.getItem(key)
+        if (existing !== null && existing !== '') return existing
+        const created = randomId()
+        sessionStorage.setItem(key, created)
+        return created
+      } catch {
+        return randomId()
+      }
     }
 
     /** @returns {string} a collision-resistant local id. */
@@ -112,12 +126,13 @@ window.__ModuleLoader__.load({
      * @param {unknown} snapshot - conversation chat snapshot or session snapshot.
      * @returns {Array<{key:string, role:string, text:string, error?:boolean}>} rows.
      */
-    function nodesToMessages(snapshot) {
+    function nodesToMessages(snapshot, fromSeq = 0) {
       const nodes = Array.isArray(snapshot?.nodes) ? snapshot.nodes : []
       const rows = []
       for (const node of nodes) {
         if (node === null || typeof node !== 'object') continue
         const seq = typeof node.seq === 'number' ? node.seq : rows.length
+        if (seq <= fromSeq) continue
         if (node.kind === 'user' || node.kind === 'steering') {
           const text = textOfContent(node.content)
           if (text !== '') rows.push({ key: 'u' + String(seq), role: 'user', text })
@@ -254,6 +269,16 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** @param {unknown} snapshot @returns {number} highest durable seq. */
+    function maxSeqOf(snapshot) {
+      const nodes = Array.isArray(snapshot?.nodes) ? snapshot.nodes : []
+      let max = 0
+      for (const node of nodes) {
+        if (node !== null && typeof node === 'object' && typeof node.seq === 'number' && node.seq > max) max = node.seq
+      }
+      return max
+    }
+
     /**
      * Build the selection action layer.
      * @param {object} ctx - root client context.
@@ -365,7 +390,9 @@ window.__ModuleLoader__.load({
         const [sending, setSending] = useState(false)
         const [expired, setExpired] = useState(false)
         const quoteSentRef = useRef(false)
+        const baselineRef = useRef(0)
         const inputRef = useRef(null)
+        const logRef = useRef(null)
 
         // Fork once per tab. A tab restored after the app restarted has no
         // matching run marker: it is expired and must not create another child.
@@ -376,7 +403,10 @@ window.__ModuleLoader__.load({
             return undefined
           }
           const meta = loadMeta(tabId)
-          if (meta !== null) quoteSentRef.current = meta.quoteSent === true
+          if (meta !== null) {
+            quoteSentRef.current = meta.quoteSent === true
+            baselineRef.current = typeof meta.baselineSeq === 'number' ? meta.baselineSeq : 0
+          }
           if (meta !== null && meta.runId !== RUN_ID) {
             setExpired(true)
             setError(tRef(ctx, 'panel.expired'))
@@ -389,14 +419,25 @@ window.__ModuleLoader__.load({
           }
           void (async () => {
             try {
-              if (typeof ctx.sessions?.fork !== 'function') throw new Error('session fork unavailable')
-              const child = await ctx.sessions.fork({ sessionId: params.parentSessionId })
+              let baselineSeq = 0
+              let child
+              if (typeof ctx.sessions?.create === 'function') {
+                let cwd
+                try {
+                  cwd = ctx.sessions.list?.getSnapshot?.()?.byId?.[params.parentSessionId]?.cwd
+                } catch { cwd = undefined }
+                child = await ctx.sessions.create(typeof cwd === 'string' && cwd !== '' ? { cwd } : {})
+              } else if (typeof ctx.sessions?.fork === 'function') {
+                child = await ctx.sessions.fork({ sessionId: params.parentSessionId })
+              } else {
+                throw new Error('session create unavailable')
+              }
               if (cancelled) return
               if (typeof child !== 'string' || child === '') throw new Error('fork returned no session')
-              saveMeta(tabId, { childId: child, runId: RUN_ID, parentSessionId: params.parentSessionId })
+              baselineRef.current = baselineSeq
+              saveMeta(tabId, { childId: child, runId: RUN_ID, parentSessionId: params.parentSessionId, baselineSeq })
               rememberChild(child)
               setChildId(child)
-              try { await ctx.get('workspaces')?.archiveSession?.(child) } catch { /* archive is best effort */ }
             } catch (forkError) {
               if (!cancelled) setError(tRef(ctx, 'panel.failed') + ': ' + String(forkError?.message ?? forkError))
             }
@@ -433,7 +474,7 @@ window.__ModuleLoader__.load({
           let disposed = false
           const update = () => {
             if (disposed) return
-            setMessages(nodesToMessages(chatSnapshotOf(ctx, binding)))
+            setMessages(nodesToMessages(chatSnapshotOf(ctx, binding), baselineRef.current))
             try { setRunning(binding.session.getSnapshot()?.running === true) } catch { /* ignore */ }
           }
           update()
@@ -451,6 +492,11 @@ window.__ModuleLoader__.load({
           if (binding === null) return
           inputRef.current?.focus?.()
         }, [binding])
+
+        useEffect(() => {
+          const log = logRef.current
+          if (log !== null && log !== undefined) log.scrollTop = log.scrollHeight
+        }, [messages.length, running])
 
         const submit = async () => {
           const text = draft.trim()
@@ -499,12 +545,16 @@ window.__ModuleLoader__.load({
         const rows = messages.map((message) => h('div', {
           key: message.key,
           className: 'dshqf-msg dshqf-' + message.role + (message.error ? ' dshqf-error' : ''),
-        },
-        h('div', { className: 'dshqf-role' }, message.role === 'assistant' ? 'DSH' : message.role),
-        message.role === 'assistant'
-          ? h(primitives.MarkdownText, { text: message.text, streaming: running })
-          : h('div', { className: 'dshqf-text' }, message.text)))
-        const log = h('div', { className: 'dshqf-log' }, empty, rows)
+        }, message.role === 'tool'
+          ? h('details', { className: 'dshqf-toolBlock' },
+            h('summary', { className: 'dshqf-role' }, 'TOOL'),
+            h('pre', { className: 'dshqf-toolText' }, message.text))
+          : h(React.Fragment, null,
+            h('div', { className: 'dshqf-role' }, message.role === 'assistant' ? 'DSH' : message.role),
+            message.role === 'assistant'
+              ? h(primitives.MarkdownText, { text: message.text, streaming: running })
+              : h('div', { className: 'dshqf-text' }, message.text))))
+        const log = h('div', { ref: logRef, className: 'dshqf-log' }, empty, rows)
         const errorBox = error !== '' ? h('div', { className: 'dshqf-errorText' }, error) : null
         const actions = h('div', { className: 'dshqf-actions' },
           running ? h('span', { className: 'dshqf-status' }, tRef(ctx, 'panel.working')) : null,
@@ -549,6 +599,11 @@ window.__ModuleLoader__.load({
 .dshqf-tool,.dshqf-error{color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-family-mono,monospace);font-size:11px}
 .dshqf-role{font-size:9px;font-weight:700;letter-spacing:.06em;color:var(--dsw-alias-label-tertiary);text-transform:uppercase;margin-bottom:3px}
 .dshqf-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.dshqf-toolBlock summary{cursor:pointer;list-style:none}
+.dshqf-toolBlock summary::-webkit-details-marker{display:none}
+.dshqf-toolBlock summary:before{content:'▸ ';color:var(--dsw-alias-label-tertiary)}
+.dshqf-toolBlock[open] summary:before{content:'▾ '}
+.dshqf-toolText{margin:4px 0 0;max-height:160px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--dsw-font-family-mono,monospace);font-size:11px}
 .dshqf-errorText{color:var(--dsw-alias-state-warning-primary);font-size:11px}
 .dshqf-composer{display:flex;flex-direction:column;gap:6px}
 .dshqf-input{width:100%;box-sizing:border-box;resize:vertical;min-height:54px;padding:7px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit}
@@ -610,7 +665,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['sessions', 'slots', 'locale'],
       apply,
-      __test: { parseForkParams, nodesToMessages, tabDefinitionFor, canOfferFork, composePrompt },
+      __test: { parseForkParams, nodesToMessages, tabDefinitionFor, canOfferFork, composePrompt, maxSeqOf },
     }
   },
 })
